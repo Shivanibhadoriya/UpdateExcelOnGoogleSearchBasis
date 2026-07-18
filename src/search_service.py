@@ -2,13 +2,12 @@
 
 from abc import ABC, abstractmethod
 import logging
-import os
 from typing import Any
 
 import requests
-from dotenv import load_dotenv
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from config import Config
 from models import SearchResult
 
 
@@ -49,16 +48,15 @@ class SerpApiSearchService(SearchService):
     """Search company information through SerpApi's Google search endpoint."""
 
     ENDPOINT = "https://serpapi.com/search.json"
-    REQUEST_TIMEOUT_SECONDS = 10
 
-    def __init__(self, api_key: str | None = None) -> None:
-        """Create the service, loading ``SERPAPI_API_KEY`` from ``.env``.
+    def __init__(self, config: Config) -> None:
+        """Create the service from validated application configuration.
 
-        ``api_key`` is accepted for controlled dependency injection, while the
-        default path always reads the key from the application's environment.
+        Args:
+            config: The application's single source of runtime configuration.
         """
-        load_dotenv()
-        self._api_key = api_key or os.getenv("SERPAPI_API_KEY")
+
+        self._config = config
 
     def search(self, company_name: str) -> SearchResult:
         """Return the first organic SerpApi result for ``company_name``.
@@ -69,9 +67,9 @@ class SerpApiSearchService(SearchService):
         if not company_name.strip():
             raise ValueError("company_name must not be empty")
 
-        if not self._api_key:
-            logger.error("SerpApi search is not configured: SERPAPI_API_KEY is missing.")
-            raise SearchConfigurationError("SERPAPI_API_KEY is not configured")
+        if not self._config.serp_api_key:
+            logger.error("SerpApi search is not configured: SERP_API_KEY is missing.")
+            raise SearchConfigurationError("SERP_API_KEY is not configured")
 
         try:
             payload = self._fetch(company_name)
@@ -88,18 +86,30 @@ class SerpApiSearchService(SearchService):
 
         return self._to_search_result(company_name, payload)
 
-    @retry(
-        retry=retry_if_exception_type((requests.RequestException, TransientSearchError)),
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-        reraise=True,
-    )
     def _fetch(self, company_name: str) -> dict[str, Any]:
-        """Fetch a SerpApi response, retrying transient failures only."""
+        """Fetch a SerpApi response using the configured retry policy."""
+
+        retrying = Retrying(
+            retry=retry_if_exception_type(
+                (requests.RequestException, TransientSearchError)
+            ),
+            stop=stop_after_attempt(self._config.max_retry_attempts),
+            wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+            reraise=True,
+        )
+        return retrying(self._request, company_name)
+
+    def _request(self, company_name: str) -> dict[str, Any]:
+        """Perform one SerpApi request using values from ``Config``."""
+
         response = requests.get(
             self.ENDPOINT,
-            params={"engine": "google", "q": company_name, "api_key": self._api_key},
-            timeout=self.REQUEST_TIMEOUT_SECONDS,
+            params={
+                "engine": "google",
+                "q": company_name,
+                "api_key": self._config.serp_api_key,
+            },
+            timeout=self._config.request_timeout_seconds,
         )
 
         if response.status_code == 429 or response.status_code >= 500:
