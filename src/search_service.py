@@ -124,17 +124,34 @@ class SerpApiSearchService(SearchService):
 
     @staticmethod
     def _to_search_result(company_name: str, payload: dict[str, Any]) -> SearchResult:
-        """Map the first organic SerpApi item to the provider-neutral model."""
+        """Map SerpApi sections to the provider-neutral search-result model."""
         organic_results = payload.get("organic_results")
+        normalized_organic_results = (
+            tuple(item for item in organic_results if isinstance(item, dict))
+            if isinstance(organic_results, list)
+            else ()
+        )
         first_result = (
-            organic_results[0]
-            if isinstance(organic_results, list) and organic_results and isinstance(organic_results[0], dict)
+            normalized_organic_results[0]
+            if normalized_organic_results
             else {}
         )
+        knowledge_graph = payload.get("knowledge_graph")
 
         return SearchResult(
             company_name=company_name,
-            title=first_result.get("title") if isinstance(first_result.get("title"), str) else None,
-            url=first_result.get("link") if isinstance(first_result.get("link"), str) else None,
-            snippet=first_result.get("snippet") if isinstance(first_result.get("snippet"), str) else None,
+            title=SerpApiSearchService._string_value(first_result, "title"),
+            url=SerpApiSearchService._string_value(first_result, "link"),
+            snippet=SerpApiSearchService._string_value(first_result, "snippet"),
+            knowledge_graph=(
+                knowledge_graph if isinstance(knowledge_graph, dict) else None
+            ),
+            organic_results=normalized_organic_results,
         )
+
+    @staticmethod
+    def _string_value(payload: dict[str, Any], key: str) -> str | None:
+        """Return ``payload[key]`` only when it is a string."""
+
+        value = payload.get(key)
+        return value if isinstance(value, str) else None
