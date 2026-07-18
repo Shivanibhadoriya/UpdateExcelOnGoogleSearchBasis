@@ -12,7 +12,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from models import SearchResult
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("company_location_enricher.search_service")
 logger.addHandler(logging.NullHandler())
 
 
