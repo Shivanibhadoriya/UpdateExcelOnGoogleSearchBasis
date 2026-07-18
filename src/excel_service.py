@@ -1,11 +1,13 @@
 """Read, validate, and prepare company-location Excel workbooks."""
 
 from pathlib import Path
-from typing import Union
+from typing import Iterator, Union
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.worksheet.worksheet import Worksheet
+
+from models import Location
 
 
 PathLike = Union[str, Path]
@@ -25,6 +27,10 @@ class CompanyColumnNotFoundError(ExcelServiceError):
 
 class WorkbookSaveError(ExcelServiceError):
     """Raised when an Excel workbook cannot be saved."""
+
+
+class WorkbookNotFoundError(ExcelServiceError):
+    """Raised when the configured input directory has no workbooks."""
 
 
 class ExcelService:
@@ -89,6 +95,73 @@ class ExcelService:
         worksheet.cell(row=1, column=location_column, value="Location")
         return location_column
 
+    def find_workbooks(self, input_directory: PathLike) -> tuple[Path, ...]:
+        """Return supported input workbooks in deterministic filename order.
+
+        Args:
+            input_directory: Directory containing the source workbooks.
+
+        Raises:
+            WorkbookNotFoundError: If the directory is invalid or has no Excel files.
+        """
+
+        directory = Path(input_directory)
+        if not directory.is_dir():
+            raise WorkbookNotFoundError(f"Input directory not found: {directory}")
+
+        workbooks = tuple(
+            path
+            for path in sorted(
+                directory.iterdir(), key=lambda item: item.name.casefold()
+            )
+            if path.is_file()
+            and path.suffix.casefold() in {".xlsx", ".xlsm"}
+            and not path.name.startswith("~$")
+        )
+        if not workbooks:
+            raise WorkbookNotFoundError(
+                f"No Excel workbooks found in input directory: {directory}"
+            )
+        return workbooks
+
+    def iter_company_rows(
+        self, worksheet: Worksheet, company_column: int
+    ) -> Iterator[tuple[int, str]]:
+        """Yield non-empty company names and their row numbers, excluding headers."""
+
+        for row_index in range(2, worksheet.max_row + 1):
+            value = worksheet.cell(row=row_index, column=company_column).value
+            if isinstance(value, str) and value.strip():
+                yield row_index, value.strip()
+
+    def write_location(
+        self, worksheet: Worksheet, row_index: int, location_column: int,
+        location: Location,
+    ) -> None:
+        """Write a normalized location into a worksheet cell.
+
+        Args:
+            worksheet: Worksheet receiving the location.
+            row_index: One-based row index for the company.
+            location_column: One-based column index for the Location field.
+            location: Normalized location to serialize for Excel.
+        """
+
+        worksheet.cell(
+            row=row_index,
+            column=location_column,
+            value=f"{location.city}, {location.state}, {location.country}",
+        )
+
+    def output_path(self, input_path: PathLike, output_directory: PathLike) -> Path:
+        """Return an output path and create its parent directory when needed."""
+
+        source_path = Path(input_path)
+        destination_directory = Path(output_directory)
+        destination_directory.mkdir(parents=True, exist_ok=True)
+        output_name = f"{source_path.stem}_enriched{source_path.suffix}"
+        return destination_directory / output_name
+
     def save_workbook(self, workbook: Workbook, workbook_path: PathLike) -> None:
         """Save ``workbook`` to ``workbook_path``.
 
@@ -108,11 +181,10 @@ class ExcelService:
         """Open a workbook and ensure its active sheet is ready for enrichment.
 
         The active worksheet must have a Company column. A Location column is
-        added when absent; the updated workbook is saved to the source path.
+        added when absent. The caller controls where the workbook is saved.
         """
         workbook = self.load_workbook(workbook_path)
         worksheet = self.get_active_worksheet(workbook)
         self.find_company_column(worksheet)
         self.ensure_location_column(worksheet)
-        self.save_workbook(workbook, workbook_path)
         return workbook, worksheet
